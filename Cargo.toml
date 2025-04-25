@@ -1,0 +1,19 @@
+[package]
+name = "rust-kafka"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-channel = "2.3.1"
+env_logger = "0.11.8"
+futures = "0.3.31"
+log = "0.4.27"
+rand = "0.9.1"
+rdkafka = "0.37.0"
+
+[dependencies.clap]
+version = "2.18.0"
+
+[dependencies.tokio]
+version = "1.44.2"
+features = ["macros", "rt-multi-thread", "sync"]
