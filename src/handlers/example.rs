@@ -1,13 +1,14 @@
 use event_router::event_handler;
 use serde::{Deserialize, Serialize};
+use crate::util::Event;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ExampleEvent {
+pub struct ExampleEventPayload {
     foo: String,
 }
 
 #[event_handler("example_event")]
-pub async fn handle_example_event(event: &ExampleEvent) {
+pub async fn handle_example_event(event: &Event<ExampleEventPayload>) {
     println!("Handling example event: {:?}", event);
     // You would put your event handling logic here
     // Since this is an async function, you can await other async functions

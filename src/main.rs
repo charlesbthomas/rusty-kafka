@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use clap::{value_t, App, Arg};
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
@@ -8,8 +6,6 @@ use log::info;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::consumer::Consumer;
-use rdkafka::producer::{FutureProducer, FutureRecord};
-use rdkafka::Message;
 
 mod handlers;
 mod util;
@@ -32,12 +28,7 @@ fn setup_logger(verbose: bool, log_conf: Option<&str>) {
 // `tokio::spawn` is used to handle IO-bound tasks in parallel (e.g., producing
 // the messages), while `tokio::task::spawn_blocking` is used to handle the
 // simulated CPU-bound task.
-async fn run_async_processor(
-    brokers: String,
-    group_id: String,
-    input_topic: String,
-    output_topic: String,
-) {
+async fn run_async_processor(brokers: String, group_id: String, input_topic: String) {
     // Create the `StreamConsumer`, to receive the messages from the topic in form of a `Stream`.
     let consumer: StreamConsumer = ClientConfig::new()
         .set("group.id", &group_id)
@@ -52,13 +43,6 @@ async fn run_async_processor(
         .subscribe(&[&input_topic])
         .expect("Can't subscribe to specified topic");
 
-    // Create the `FutureProducer` to produce asynchronously.
-    let producer: FutureProducer = ClientConfig::new()
-        .set("bootstrap.servers", &brokers)
-        .set("message.timeout.ms", "5000")
-        .create()
-        .expect("Producer creation error");
-
     info!("Starting event loop");
 
     let mut stream = consumer.stream();
@@ -68,25 +52,7 @@ async fn run_async_processor(
         .expect("failed to read next message from consumer")
     {
         info!("Received message: {:?}", borrowed_message);
-
         router::route_kafka_message(&borrowed_message).await;
-
-        let key = borrowed_message
-            .key()
-            .expect("failed to get key")
-            .to_owned();
-        let payload = borrowed_message
-            .payload()
-            .expect("failed to get payload")
-            .to_owned();
-
-        producer
-            .send(
-                FutureRecord::to(&output_topic).key(&key).payload(&payload),
-                Duration::from_secs(0),
-            )
-            .await
-            .expect("failed to send message to producer");
     }
 
     info!("Stream processing terminated");
@@ -150,7 +116,6 @@ async fn main() {
     let brokers = matches.value_of("brokers").unwrap();
     let group_id = matches.value_of("group-id").unwrap();
     let input_topic = matches.value_of("input-topic").unwrap();
-    let output_topic = matches.value_of("output-topic").unwrap();
     let num_workers = value_t!(matches, "num-workers", usize).unwrap();
 
     (0..num_workers)
@@ -159,7 +124,6 @@ async fn main() {
                 brokers.to_owned(),
                 group_id.to_owned(),
                 input_topic.to_owned(),
-                output_topic.to_owned(),
             ))
         })
         .collect::<FuturesUnordered<_>>()
