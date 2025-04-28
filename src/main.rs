@@ -1,9 +1,6 @@
-use std::thread;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
-
-// https://crates.io/crates/async-channel for a
-// Go-style multi-producer, multi-consumer channel.
-use async_channel;
 
 use clap::{value_t, App, Arg};
 use futures::stream::FuturesUnordered;
@@ -13,43 +10,25 @@ use log::info;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::consumer::Consumer;
-use rdkafka::message::{BorrowedMessage, OwnedMessage};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::Message;
+use util::kafka_router::route_kafka_message;
 
+mod handlers;
+mod util;
+
+inventory::collect!(EventHandlerRegistration);
+
+pub struct EventHandlerRegistration {
+    pub event_type: &'static str,
+    pub handler: fn(&serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+}
 fn setup_logger(verbose: bool, log_conf: Option<&str>) {
     let log_level = if verbose { "debug" } else { "info" };
     let log_conf = log_conf.unwrap_or("rdkafka=info");
     env_logger::Builder::new()
         .parse_filters(&format!("{},{}", log_level, log_conf))
         .init();
-}
-
-async fn record_borrowed_message_receipt(msg: &BorrowedMessage<'_>) {
-    // Simulate some work that must be done in the same order as messages are
-    // received; i.e., before truly parallel processing can begin.
-    info!("Message received: {}", msg.offset());
-}
-
-async fn record_owned_message_receipt(_msg: &OwnedMessage) {
-    // Like `record_borrowed_message_receipt`, but takes an `OwnedMessage`
-    // instead, as in a real-world use case  an `OwnedMessage` might be more
-    // convenient than a `BorrowedMessage`.
-}
-
-// Emulates an expensive, synchronous computation.
-fn expensive_computation(msg: OwnedMessage) -> String {
-    info!("Starting expensive computation on message {}", msg.offset());
-    thread::sleep(Duration::from_millis(100));
-    info!(
-        "Expensive computation completed on message {}",
-        msg.offset()
-    );
-    match msg.payload_view::<str>() {
-        Some(Ok(payload)) => format!("Payload len for {} is {}", payload, payload.len()),
-        Some(Err(_)) => "Message payload is not a string".to_owned(),
-        None => "No payload".to_owned(),
-    }
 }
 
 // Creates all the resources and runs the event loop. The event loop will:
@@ -89,77 +68,29 @@ async fn run_async_processor(
 
     info!("Starting event loop");
 
-    let (tx, rx) = async_channel::bounded::<OwnedMessage>(1); // Equivalent to a Go unbuffered channel.
-
-    // We can have at most N expensive computations in flight.
-    const N: usize = 1;
-    for _ in 1..=N {
-        // `tokio::spawn()` returns a `JoinHandle` that lets us
-        // abort the spawned task, or wait for it to return.
-        // Since our task just receives messages from the channel forever,
-        // and doesn't return a value, we can discard the `JoinHandle`.
-        //
-        // Further, since the Tokio runtime is responsible for
-        // running the future we pass it to completion, we don't need
-        // to `.await` the `JoinHandle`.
-        tokio::spawn({
-            // Each task gets owning references to the receiver and producer.
-            // Under the hood, both of these types might hold shared state in
-            // an `Arc<Mutex<...>>`, but that's abstracted from us here.
-            //
-            // (Semantically, `.clone()` means "give me a dupe of this thing,"
-            // not necessarily "give me a copy of this thing's bytes".
-            // Depending on the semantics of the object, cloning might copy
-            // its bytes, or it might bump a reference count).
-            let rx = rx.clone();
-            let producer = producer.clone();
-            let output_topic = output_topic.clone();
-
-            async move {
-                // When the sender is closed, `rx.await()` will return an `Err`,
-                // which will exit this loop.
-                while let Ok(owned_message) = rx.recv().await {
-                    let key = owned_message.key().expect("failed to get key").to_owned();
-                    let computation_result =
-                        tokio::task::spawn_blocking(|| expensive_computation(owned_message))
-                            .await
-                            .expect("failed to wait for expensive computation");
-                    let produce_future = producer.send(
-                        FutureRecord::to(&output_topic)
-                            .key(&key)
-                            .payload(&computation_result),
-                        Duration::from_secs(0),
-                    );
-                    match produce_future.await {
-                        Ok(delivery) => println!("Sent: {:?}", delivery),
-                        Err((e, _)) => println!("Error: {:?}", e),
-                    }
-                }
-            }
-        });
-    }
-
     let mut stream = consumer.stream();
     while let Some(borrowed_message) = stream
         .try_next()
         .await
         .expect("failed to read next message from consumer")
     {
-        // Process each message
-        record_borrowed_message_receipt(&borrowed_message).await;
-        // Borrowed messages can't outlive the consumer they are received from, so they need to
-        // be owned in order to be sent to a separate thread.
-        let owned_message = borrowed_message.detach();
-        record_owned_message_receipt(&owned_message).await;
-
-        info!(
-            "Sending message to channel, offset: {}, partition: {}",
-            owned_message.offset(),
-            owned_message.partition()
-        );
-        tx.send(owned_message)
+        info!("Received message: {:?}", borrowed_message);
+        route_kafka_message(&borrowed_message).await;
+        let key = borrowed_message
+            .key()
+            .expect("failed to get key")
+            .to_owned();
+        let payload = borrowed_message
+            .payload()
+            .expect("failed to get payload")
+            .to_owned();
+        producer
+            .send(
+                FutureRecord::to(&output_topic).key(&key).payload(&payload),
+                Duration::from_secs(0),
+            )
             .await
-            .expect("failed to send message to channel");
+            .expect("failed to send message to producer");
     }
 
     info!("Stream processing terminated");
