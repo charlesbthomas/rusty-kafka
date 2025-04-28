@@ -1,5 +1,3 @@
-use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 
 use clap::{value_t, App, Arg};
@@ -12,17 +10,22 @@ use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::consumer::Consumer;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::Message;
-use util::kafka_router::route_kafka_message;
 
 mod handlers;
 mod util;
 
-inventory::collect!(EventHandlerRegistration);
+// Generate the event router module
+event_router::generate_router!();
 
-pub struct EventHandlerRegistration {
-    pub event_type: &'static str,
-    pub handler: fn(&serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+pub fn register_event_handler(
+    event_type: &'static str,
+    handler: fn(
+        &serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+) {
+    router::register_handler(event_type, handler);
 }
+
 fn setup_logger(verbose: bool, log_conf: Option<&str>) {
     let log_level = if verbose { "debug" } else { "info" };
     let log_conf = log_conf.unwrap_or("rdkafka=info");
@@ -75,7 +78,7 @@ async fn run_async_processor(
         .expect("failed to read next message from consumer")
     {
         info!("Received message: {:?}", borrowed_message);
-        route_kafka_message(&borrowed_message).await;
+        router::route_kafka_message(&borrowed_message).await;
         let key = borrowed_message
             .key()
             .expect("failed to get key")
@@ -147,6 +150,9 @@ async fn main() {
         .get_matches();
 
     setup_logger(true, matches.value_of("log-conf"));
+
+    // List all registered event handlers on startup
+    router::list_registered_handlers();
 
     let brokers = matches.value_of("brokers").unwrap();
     let group_id = matches.value_of("group-id").unwrap();
