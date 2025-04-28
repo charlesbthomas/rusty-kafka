@@ -14,17 +14,7 @@ use rdkafka::Message;
 mod handlers;
 mod util;
 
-// Generate the event router module
 event_router::generate_router!();
-
-pub fn register_event_handler(
-    event_type: &'static str,
-    handler: fn(
-        &serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
-) {
-    router::register_handler(event_type, handler);
-}
 
 fn setup_logger(verbose: bool, log_conf: Option<&str>) {
     let log_level = if verbose { "debug" } else { "info" };
@@ -78,7 +68,9 @@ async fn run_async_processor(
         .expect("failed to read next message from consumer")
     {
         info!("Received message: {:?}", borrowed_message);
+
         router::route_kafka_message(&borrowed_message).await;
+
         let key = borrowed_message
             .key()
             .expect("failed to get key")
@@ -87,6 +79,7 @@ async fn run_async_processor(
             .payload()
             .expect("failed to get payload")
             .to_owned();
+
         producer
             .send(
                 FutureRecord::to(&output_topic).key(&key).payload(&payload),

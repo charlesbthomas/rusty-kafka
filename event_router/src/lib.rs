@@ -17,10 +17,9 @@ pub fn generate_router(_input: TokenStream) -> TokenStream {
 
             type EventHandler = fn(&serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 
-            static EVENT_HANDLERS: OnceLock<Mutex<HashMap<&'static str, EventHandler>>> = OnceLock::new();
-
             // Initialize the handler registry
             fn get_handlers() -> &'static Mutex<HashMap<&'static str, EventHandler>> {
+                static EVENT_HANDLERS: OnceLock<Mutex<HashMap<&'static str, EventHandler>>> = OnceLock::new();
                 EVENT_HANDLERS.get_or_init(|| {
                     Mutex::new(HashMap::new())
                 })
@@ -49,8 +48,7 @@ pub fn generate_router(_input: TokenStream) -> TokenStream {
                 }
             }
 
-            // Main router function that replaces the previous implementation
-            pub async fn route_kafka_message<'a>(msg: &'a BorrowedMessage<'a>) {
+            pub async fn route_kafka_message(msg: &BorrowedMessage<'_>) {
                 if let Some(payload) = msg.payload() {
                     match serde_json::from_slice::<serde_json::Value>(payload) {
                         Ok(json) => {
@@ -84,7 +82,6 @@ pub fn generate_router(_input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-// Re-export ctor so handlers can use it
 #[proc_macro_attribute]
 pub fn event_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse the attribute as a literal string (e.g., "user_created")
