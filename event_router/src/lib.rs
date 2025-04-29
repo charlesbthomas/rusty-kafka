@@ -1,6 +1,9 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, ItemFn, LitStr};
+use syn::{parse_macro_input, ItemFn};
+
+mod args;
+use args::MacroArgs;
 
 // The main macro that generates the router function
 #[proc_macro]
@@ -17,22 +20,40 @@ pub fn generate_router(_input: TokenStream) -> TokenStream {
 
             type EventHandler = fn(&serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 
+            // Composite key for event handlers (event_type, source)
+            #[derive(PartialEq, Eq, Hash, Clone, Debug)]
+            struct HandlerKey {
+                event_type: String,
+                source: Option<String>,
+            }
+
+            impl HandlerKey {
+                fn new(event_type: &str, source: Option<&str>) -> Self {
+                    HandlerKey {
+                        event_type: event_type.to_string(),
+                        source: source.map(|s| s.to_string()),
+                    }
+                }
+            }
+
             // Initialize the handler registry
-            fn get_handlers() -> &'static Mutex<HashMap<&'static str, EventHandler>> {
-                static EVENT_HANDLERS: OnceLock<Mutex<HashMap<&'static str, EventHandler>>> = OnceLock::new();
+            fn get_handlers() -> &'static Mutex<HashMap<HandlerKey, EventHandler>> {
+                static EVENT_HANDLERS: OnceLock<Mutex<HashMap<HandlerKey, EventHandler>>> = OnceLock::new();
                 EVENT_HANDLERS.get_or_init(|| {
                     Mutex::new(HashMap::new())
                 })
             }
 
             // Register a handler at initialization time
-            pub fn register_handler(event_type: &'static str, handler: EventHandler) {
+            pub fn register_handler(event_type: &str, source: Option<&str>, handler: EventHandler) {
+                let key = HandlerKey::new(event_type, source);
                 let mut handlers = get_handlers().lock().unwrap();
-                if handlers.contains_key(event_type) {
+
+                if handlers.contains_key(&key) {
                     // Handler already registered, ignore
                     return;
                 }
-                handlers.insert(event_type, handler);
+                handlers.insert(key, handler);
             }
 
             // List all registered event handlers
@@ -42,8 +63,11 @@ pub fn generate_router(_input: TokenStream) -> TokenStream {
                 if handlers.is_empty() {
                     println!("  No handlers registered");
                 } else {
-                    for event_type in handlers.keys() {
-                        println!("  - {}", event_type);
+                    for key in handlers.keys() {
+                        match &key.source {
+                            Some(source) => println!("  - {} (source: {})", key.event_type, source),
+                            None => println!("  - {}", key.event_type),
+                        }
                     }
                 }
             }
@@ -57,15 +81,40 @@ pub fn generate_router(_input: TokenStream) -> TokenStream {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default();
 
+                            let source = json
+                                .get("source")
+                                .and_then(|v| v.as_str());
+
+                            // Find the appropriate handler
                             let handler = {
                                 let handlers = get_handlers().lock().unwrap();
-                                handlers.get(event_type).cloned()
+
+                                // First try to find a handler matching both event_type and source
+                                if let Some(source_str) = source {
+                                    let source_key = HandlerKey::new(event_type, Some(source_str));
+
+                                    if let Some(h) = handlers.get(&source_key) {
+                                        Some(h.clone())
+                                    } else {
+                                        // Fall back to a source-agnostic handler
+                                        let generic_key = HandlerKey::new(event_type, None);
+                                        handlers.get(&generic_key).cloned()
+                                    }
+                                } else {
+                                    // No source in the event, use generic handler
+                                    let generic_key = HandlerKey::new(event_type, None);
+                                    handlers.get(&generic_key).cloned()
+                                }
                             };
 
                             if let Some(handler) = handler {
                                 handler(&json).await;
                             } else {
-                                eprintln!("No handler found for event type: {}", event_type);
+                                if let Some(source_str) = source {
+                                    eprintln!("No handler found for event type: {} (source: {})", event_type, source_str);
+                                } else {
+                                    eprintln!("No handler found for event type: {}", event_type);
+                                }
                             }
                         }
                         Err(err) => {
@@ -84,9 +133,10 @@ pub fn generate_router(_input: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn event_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse the attribute as a literal string (e.g., "user_created")
-    let event_type_literal = parse_macro_input!(attr as LitStr);
-    let event_type_str = event_type_literal.value();
+    // Parse the attribute to get event_type and optional source
+    let args = parse_macro_input!(attr as MacroArgs);
+    let event_type_str = args.event_type.value();
+    let source_option = args.source.map(|s| s.value());
 
     // Parse the function the attribute is attached to
     let input_fn = parse_macro_input!(item as ItemFn);
@@ -136,6 +186,16 @@ pub fn event_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    // Generate the source literal for registration
+    let source_literal = match source_option {
+        Some(source) => quote! { Some(#source) },
+        None => quote! { None },
+    };
+
+    // Generate a unique name for the initialization function using the function name
+    let init_fn_name = format!("__event_handler_init_{}", fn_name);
+    let init_fn_ident = syn::Ident::new(&init_fn_name, proc_macro2::Span::call_site());
+
     // Generate the final code
     let expanded = quote! {
         // The original function
@@ -146,9 +206,9 @@ pub fn event_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[automatically_derived]
         #[allow(non_snake_case)]
         #[::ctor::ctor]
-        fn __event_handler_init() {
+        fn #init_fn_ident() {
             #handler_impl
-            crate::router::register_handler(#event_type_str, handler);
+            crate::router::register_handler(#event_type_str, #source_literal, handler);
         }
     };
 

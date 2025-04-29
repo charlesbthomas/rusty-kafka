@@ -1,6 +1,6 @@
+use crate::util::Event;
 use event_router::event_handler;
 use serde::{Deserialize, Serialize};
-use crate::util::Event;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExampleEvent2Payload {
@@ -8,7 +8,7 @@ pub struct ExampleEvent2Payload {
     lina_is_cool: String,
 }
 
-#[event_handler("example_event_2")]
+#[event_handler(event_type = "example_event_2", source = "example_source")]
 pub fn handle_example_event(event: &Event<ExampleEvent2Payload>) {
     println!("Handling example event 2: {:?}", event);
     // You would put your event handling logic here
