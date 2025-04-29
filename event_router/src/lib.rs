@@ -72,57 +72,100 @@ pub fn generate_router(_input: TokenStream) -> TokenStream {
                 }
             }
 
-            pub async fn route_kafka_message(msg: &BorrowedMessage<'_>) {
-                if let Some(payload) = msg.payload() {
-                    match serde_json::from_slice::<serde_json::Value>(payload) {
-                        Ok(json) => {
-                            let event_type = json
-                                .get("event_type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default();
-
-                            let source = json
-                                .get("source")
-                                .and_then(|v| v.as_str());
-
-                            // Find the appropriate handler
-                            let handler = {
-                                let handlers = get_handlers().lock().unwrap();
-
-                                // First try to find a handler matching both event_type and source
-                                if let Some(source_str) = source {
-                                    let source_key = HandlerKey::new(event_type, Some(source_str));
-
-                                    if let Some(h) = handlers.get(&source_key) {
-                                        Some(h.clone())
-                                    } else {
-                                        // Fall back to a source-agnostic handler
-                                        let generic_key = HandlerKey::new(event_type, None);
-                                        handlers.get(&generic_key).cloned()
-                                    }
-                                } else {
-                                    // No source in the event, use generic handler
-                                    let generic_key = HandlerKey::new(event_type, None);
-                                    handlers.get(&generic_key).cloned()
-                                }
-                            };
-
-                            if let Some(handler) = handler {
-                                handler(&json).await;
-                            } else {
-                                if let Some(source_str) = source {
-                                    eprintln!("No handler found for event type: {} (source: {})", event_type, source_str);
-                                } else {
-                                    eprintln!("No handler found for event type: {}", event_type);
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            eprintln!("Failed to parse Kafka message as JSON: {}", err);
-                        }
+            // Extract event type and source from a JSON event
+            fn extract_event_metadata(json: &serde_json::Value) -> (String, Option<String>) {
+                let event_type = json
+                    .get("event_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                
+                let source = json
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                
+                (event_type, source)
+            }
+            
+            // Find the most appropriate handler for an event
+            fn find_handler(event_type: &str, source: Option<&str>) -> Option<EventHandler> {
+                let handlers = get_handlers().lock().unwrap();
+                
+                // Try source-specific handler first, then fall back to generic handler
+                match source {
+                    Some(source_str) => {
+                        // Try a source-specific handler first
+                        let source_key = HandlerKey::new(event_type, Some(source_str));
+                        
+                        handlers.get(&source_key)
+                            .cloned()
+                            .or_else(|| {
+                                // Fall back to a source-agnostic handler
+                                let generic_key = HandlerKey::new(event_type, None);
+                                handlers.get(&generic_key).cloned()
+                            })
+                    },
+                    None => {
+                        // No source in the event, use generic handler
+                        let generic_key = HandlerKey::new(event_type, None);
+                        handlers.get(&generic_key).cloned()
                     }
-                } else {
-                    eprintln!("Received Kafka message with no payload");
+                }
+            }
+            
+            // Log a message when no handler is found
+            fn log_missing_handler(event_type: &str, source: Option<&str>) {
+                match source {
+                    Some(source_str) => {
+                        eprintln!("No handler found for event type: {} (source: {})", event_type, source_str);
+                    },
+                    None => {
+                        eprintln!("No handler found for event type: {}", event_type);
+                    }
+                }
+            }
+            
+            // Parse a Kafka message payload as JSON
+            fn parse_message(payload: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
+                serde_json::from_slice(payload)
+            }
+            
+            // Main routing function
+            pub async fn route_kafka_message(msg: &BorrowedMessage<'_>) {
+                // Check if the message has a payload
+                let payload = match msg.payload() {
+                    Some(payload) => payload,
+                    None => {
+                        eprintln!("Received Kafka message with no payload");
+                        return;
+                    }
+                };
+                
+                // Parse the payload as JSON
+                let json = match parse_message(payload) {
+                    Ok(json) => json,
+                    Err(err) => {
+                        eprintln!("Failed to parse Kafka message as JSON: {}", err);
+                        return;
+                    }
+                };
+                
+                // Extract event metadata
+                let (event_type, source) = extract_event_metadata(&json);
+                let source_ref = source.as_deref();
+                
+                // Find an appropriate handler
+                let handler = find_handler(&event_type, source_ref);
+                
+                // Execute or log missing handler
+                match handler {
+                    Some(handler) => {
+                        handler(&json).await;
+                    },
+                    None => {
+                        log_missing_handler(&event_type, source_ref);
+                    }
                 }
             }
         }
