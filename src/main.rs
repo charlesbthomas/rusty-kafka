@@ -10,7 +10,7 @@ use rdkafka::consumer::Consumer;
 mod handlers;
 mod util;
 
-event_router::generate_router!();
+message_router::generate_event_router!();
 
 fn setup_logger(verbose: bool, log_conf: Option<&str>) {
     let log_level = if verbose { "debug" } else { "info" };
@@ -20,16 +20,7 @@ fn setup_logger(verbose: bool, log_conf: Option<&str>) {
         .init();
 }
 
-// Creates all the resources and runs the event loop. The event loop will:
-//   1) receive a stream of messages from the `StreamConsumer`.
-//   2) filter out eventual Kafka errors.
-//   3) send the message to a thread pool for processing.
-//   4) produce the result to the output topic.
-// `tokio::spawn` is used to handle IO-bound tasks in parallel (e.g., producing
-// the messages), while `tokio::task::spawn_blocking` is used to handle the
-// simulated CPU-bound task.
 async fn run_async_processor(brokers: String, group_id: String, input_topic: String) {
-    // Create the `StreamConsumer`, to receive the messages from the topic in form of a `Stream`.
     let consumer: StreamConsumer = ClientConfig::new()
         .set("group.id", &group_id)
         .set("bootstrap.servers", &brokers)
@@ -52,7 +43,7 @@ async fn run_async_processor(brokers: String, group_id: String, input_topic: Str
         .expect("failed to read next message from consumer")
     {
         info!("Received message: {:?}", borrowed_message);
-        router::route_kafka_message(&borrowed_message).await;
+        event_router::route_kafka_message(&borrowed_message).await;
     }
 
     info!("Stream processing terminated");
@@ -110,8 +101,7 @@ async fn main() {
 
     setup_logger(true, matches.value_of("log-conf"));
 
-    // List all registered event handlers on startup
-    router::list_registered_handlers();
+    event_router::list_registered_handlers();
 
     let brokers = matches.value_of("brokers").unwrap();
     let group_id = matches.value_of("group-id").unwrap();

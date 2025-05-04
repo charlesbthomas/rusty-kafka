@@ -5,7 +5,7 @@ edition = "2021"
 
 [workspace]
 members = [
-    "event_router",
+    "message_router",
 ]
 
 [dependencies]
@@ -15,7 +15,7 @@ futures = "0.3.31"
 log = "0.4.27"
 rand = "0.9.1"
 rdkafka = "0.37.0"
-event_router = { path = "./event_router" }
+message_router = { path = "./message_router" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ctor = "0.2.5"

@@ -1,5 +1,5 @@
 use crate::util::Event;
-use event_router::event_handler;
+use message_router::event_handler;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]

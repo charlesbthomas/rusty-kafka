@@ -253,18 +253,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "event_router"
-version = "0.1.0"
-dependencies = [
- "ctor",
- "proc-macro2",
- "quote",
- "rdkafka",
- "serde_json",
- "syn",
-]
-
-[[package]]
 name = "futures"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -461,6 +449,18 @@ name = "memchr"
 version = "2.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
+
+[[package]]
+name = "message_router"
+version = "0.1.0"
+dependencies = [
+ "ctor",
+ "proc-macro2",
+ "quote",
+ "rdkafka",
+ "serde_json",
+ "syn",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -684,9 +684,9 @@ dependencies = [
  "clap",
  "ctor",
  "env_logger",
- "event_router",
  "futures",
  "log",
+ "message_router",
  "rand",
  "rdkafka",
  "serde",
